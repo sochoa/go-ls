@@ -41,26 +41,62 @@ type Stat struct {
 }
 
 func New(n string, stat *syscall.Stat_t) Stat {
-	var m Stat
-	m.BaseName = path.Base(n)
-	m.AbsolutePath, _ = filepath.Abs(n)
-	if stat.Mode&syscall.S_IFDIR == syscall.S_IFDIR {
-		m.Type = "directory"
-	} else if stat.Mode&syscall.S_IFREG == syscall.S_IFREG {
-		m.Type = "file"
-	} else if stat.Mode&syscall.S_IFLNK == syscall.S_IFLNK {
+	return NewWithDeps(n, stat, user.Lookup, path.Base, filepath.Abs)
+}
+
+func (s Stat) Json(pretty bool) (string, error) {
+	var (
+		statBytes []byte
+		err       error
+	)
+	if pretty {
+		statBytes, _ = json.MarshalIndent(s, "", "  ")
+	} else {
+		statBytes, _ = json.Marshal(s)
+	}
+	if err != nil {
+		return string(statBytes), fmt.Errorf("failed to marshal Stat type struct to json: %w", err)
+	}
+	return string(statBytes), nil
+}
+
+func NewWithDeps(
+	n string,
+	stat *syscall.Stat_t,
+	userLookup func(uid string) (*user.User, error),
+	pathBasename func(string) string,
+	pathAbs func(string) (string, error),
+) Stat {
+	var (
+		m   Stat
+		err error
+	)
+	m.BaseName = pathBasename(n)
+	m.AbsolutePath, err = pathAbs(n)
+	if err != nil {
+		m.AbsolutePath = "unknown"
+	}
+	isSymlink := stat.Mode&syscall.S_IFLNK == syscall.S_IFLNK
+	isCharDevice := stat.Mode&syscall.S_IFCHR == syscall.S_IFCHR
+	isBlockDevice := stat.Mode&syscall.S_IFBLK == syscall.S_IFBLK
+	if isSymlink {
 		m.Type = "symlink"
+	} else if isBlockDevice {
+		m.Type = "block_device"
+	} else if isCharDevice {
+		m.Type = "character_device"
 	} else if stat.Mode&syscall.S_IFIFO == syscall.S_IFIFO {
 		m.Type = "fifo"
 	} else if stat.Mode&syscall.S_IFSOCK == syscall.S_IFSOCK {
 		m.Type = "socket"
-	} else if stat.Mode&syscall.S_IFCHR == syscall.S_IFCHR {
-		m.Type = "character_device"
-	} else if stat.Mode&syscall.S_IFBLK == syscall.S_IFBLK {
-		m.Type = "block_device"
+	} else if stat.Mode&syscall.S_IFDIR == syscall.S_IFDIR {
+		m.Type = "directory"
+	} else if stat.Mode&syscall.S_IFREG == syscall.S_IFREG {
+		m.Type = "file"
 	} else {
 		m.Type = "unknown"
 	}
+
 	m.SizeBytes = stat.Size
 	m.Mode = stat.Mode
 	m.UserID = stat.Uid
@@ -72,8 +108,7 @@ func New(n string, stat *syscall.Stat_t) Stat {
 	m.BlockSize = uint32(stat.Blksize)
 	m.NumBlocks = uint64(stat.Blocks)
 
-	var err error
-	u, err := user.LookupId(fmt.Sprintf("%d", stat.Uid))
+	u, err := userLookup(fmt.Sprintf("%d", stat.Uid))
 	if err == nil {
 		m.Owner = u.Username
 		m.UserName = u.Username
@@ -82,7 +117,7 @@ func New(n string, stat *syscall.Stat_t) Stat {
 		m.UserName = "unknown"
 	}
 
-	u, err = user.LookupId(fmt.Sprintf("%d", stat.Gid))
+	u, err = userLookup(fmt.Sprintf("%d", stat.Gid))
 	if err == nil {
 		m.GroupName = u.Username
 	} else {
@@ -118,20 +153,4 @@ func New(n string, stat *syscall.Stat_t) Stat {
 	m.Permissions.Symbolic.Group = perm.New(groupPerms)
 	m.Permissions.Symbolic.Other = perm.New(otherPerms)
 	return m
-}
-
-func (s Stat) Json(pretty bool) (string, error) {
-	var (
-		statBytes []byte
-		err       error
-	)
-	if pretty {
-		statBytes, _ = json.MarshalIndent(s, "", "  ")
-	} else {
-		statBytes, _ = json.Marshal(s)
-	}
-	if err != nil {
-		return string(statBytes), fmt.Errorf("failed to marshal Stat type struct to json: %w", err)
-	}
-	return string(statBytes), nil
 }
