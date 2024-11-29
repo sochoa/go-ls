@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+type CommonStat interface {
+	Json(pretty bool) (string, error)
+	GetType() string
+	GetAbsolutePath() string
+}
+
 type Stat struct {
 	SizeBytes              int64     `json:"size_bytes"`
 	Mode                   uint16    `json:"mode"`
@@ -40,6 +46,8 @@ type Stat struct {
 	Type         string `json:"type"`
 }
 
+var _ CommonStat = (*Stat)(nil)
+
 func New(n string, stat *syscall.Stat_t) Stat {
 	return NewWithDeps(n, stat, user.Lookup, path.Base, filepath.Abs)
 }
@@ -59,6 +67,25 @@ func (s Stat) Json(pretty bool) (string, error) {
 	}
 	return string(statBytes), nil
 }
+
+func (s Stat) GetType() string {
+	return s.Type
+}
+
+func (s Stat) GetAbsolutePath() string {
+	return s.AbsolutePath
+}
+
+const (
+	SymbolicLinkFileType = "symlink"
+	BlockDeviceFileType  = "block_device"
+	CharDeviceFileType   = "character_device"
+	FifoFileType         = "fifo"
+	SocketFileType       = "socket"
+	DirectoryFileType    = "directory"
+	RegularFileType      = "file"
+	UnknownFileType      = "unknown"
+)
 
 func NewWithDeps(
 	n string,

@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -13,47 +14,120 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	outputTypeJson = "json"
+	outputTypeText = "text"
+)
+
 var (
 	listLong   bool
 	jsonPretty bool
+	outputType string
 	rootCmd    = &cobra.Command{
 		Use: "ls",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				args = []string{os.Getenv("PWD")}
 			}
+
 			count := 0
 			argCount := len(args)
-			if argCount > 1 {
+			if argCount > 1 && outputType == outputTypeJson {
 				fmt.Printf("[")
 			}
-			for _, arg := range args {
+
+			for idx := 0; idx < len(args); idx++ {
+				arg := args[idx]
 				arg = strings.TrimSpace(arg)
 				if arg == "" {
 					continue
 				}
-				if count > 0 {
+
+				if count > 0 && outputType == outputTypeJson {
 					fmt.Printf(",")
 				}
-				var s syscall.Stat_t
-				err := syscall.Stat(arg, &s)
-				if err != nil {
-					continue // does not exist
+
+				matches, err := filepath.Glob(arg)
+				if err != nil || len(matches) == 0 {
+					fmt.Fprintf(os.Stderr, "No matches found for %s\n", arg)
+					continue
+				} else if len(matches) > 1 {
+					left := args[:idx]
+					right := args[idx+1:]
+					args = append(append(left, matches...), right...)
 				}
-				m := stat.New(arg, &s)
-				if listLong {
-					jsonStr, err := m.Json(jsonPretty)
+
+				for _, match := range matches {
+					var s syscall.Stat_t
+					err := syscall.Stat(match, &s)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "error: %v\n", err)
-					} else {
-						fmt.Printf(jsonStr)
+						fmt.Fprintf(os.Stderr, "Error statting %s: %v\n", match, err)
+						continue
 					}
-				} else {
-					fmt.Println(m.AbsolutePath)
+
+					// Get stats for the current item
+					var m stat.CommonStat = stat.New(match, &s)
+					if m.GetType() == stat.SymbolicLinkFileType {
+						var l *stat.StatLink
+						l, err = stat.NewLink(m)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error reading symlink %s: %v\n", match, err)
+							continue
+						} else if l != nil {
+							m = *l
+						} else {
+							fmt.Fprintf(os.Stderr, "Error reading symlink %s: %v\n", match, err)
+							continue
+						}
+					}
+
+					if listLong {
+						jsonStr, err := m.Json(jsonPretty)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "error: %v\n", err)
+						} else {
+							fmt.Printf(jsonStr)
+						}
+					} else {
+						fmt.Println(m.GetAbsolutePath())
+					}
+
+					// If the current item is a directory, get its immediate children
+					if m.GetType() == stat.DirectoryFileType {
+						children, err := os.ReadDir(match)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Error reading directory %s: %v\n", match, err)
+							continue
+						}
+
+						for _, child := range children {
+							childPath := filepath.Join(match, child.Name())
+							var childStat syscall.Stat_t
+							err := syscall.Stat(childPath, &childStat)
+							if err != nil {
+								fmt.Fprintf(os.Stderr, "Error statting %s: %v\n", childPath, err)
+								continue
+							}
+
+							childMeta := stat.New(childPath, &childStat)
+							if listLong {
+								jsonStr, err := childMeta.Json(jsonPretty)
+								if err != nil {
+									fmt.Fprintf(os.Stderr, "error: %v\n", err)
+								} else {
+									fmt.Printf("  %s\n", jsonStr) // Indent for clarity
+								}
+							} else {
+								fmt.Printf("%s\n", childMeta.AbsolutePath)
+							}
+						}
+					}
+
+					count++
 				}
-				count++
 			}
-			if argCount > 1 {
+
+			if argCount > 1 && outputType == outputTypeJson {
 				fmt.Printf("]")
 			}
 			fmt.Println()
@@ -73,4 +147,5 @@ func init() {
 	rootCmd.Flags().BoolVarP(&listLong, "long", "l", false,
 		"use a long listing format")
 	rootCmd.Flags().BoolVarP(&jsonPretty, "json", "j", false, "use json output")
+	rootCmd.Flags().StringVar(&outputType, "output", "text", "output type (text or json)")
 }
